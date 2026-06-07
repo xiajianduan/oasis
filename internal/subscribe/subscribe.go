@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,14 +30,59 @@ type ClashProxy struct {
 	Username string `yaml:"username"`
 }
 
+type UnsupportedTypesError struct {
+	Types map[string]int
+}
+
+func (e UnsupportedTypesError) Error() string {
+	if len(e.Types) == 0 {
+		return "订阅中没有节点"
+	}
+	var parts []string
+	for typ, count := range e.Types {
+		parts = append(parts, fmt.Sprintf("%s:%d", typ, count))
+	}
+	return fmt.Sprintf("订阅中没有 Oasis 当前支持的节点类型，发现类型: %s", strings.Join(parts, ", "))
+}
+
 // FetchAndParse 获取并解析订阅
 func FetchAndParse(url string) ([]config.NodeConfig, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	return fetchAndParseWithClient(client, url)
+}
+
+// FetchAndParseViaNode 通过当前 SOCKS5 节点获取并解析订阅。
+func FetchAndParseViaNode(rawURL string, node *config.NodeConfig) ([]config.NodeConfig, error) {
+	if node == nil || node.Type != "socks5" {
+		return FetchAndParse(rawURL)
+	}
+	proxyURL, err := url.Parse(fmt.Sprintf("socks5://%s:%d", node.Server, node.Port))
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+	}
+	return fetchAndParseWithClient(client, rawURL)
+}
+
+func fetchAndParseWithClient(client *http.Client, url string) ([]config.NodeConfig, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "clash.meta")
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("获取订阅失败: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("获取订阅失败: HTTP %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -72,6 +118,7 @@ func parseClashYAML(content string) ([]config.NodeConfig, error) {
 	}
 
 	var nodes []config.NodeConfig
+	unsupported := make(map[string]int)
 	for _, p := range clash.Proxies {
 		node := config.NodeConfig{
 			Name:     p.Name,
@@ -86,20 +133,24 @@ func parseClashYAML(content string) ([]config.NodeConfig, error) {
 			node.Type = "shadowsocks"
 			node.Method = p.Cipher
 		case "vmess":
-			node.Type = "vmess"
-			// vmess 需要额外处理，先跳过
+			unsupported[p.Type]++
 			continue
 		case "trojan":
-			node.Type = "trojan"
+			unsupported[p.Type]++
+			continue
 		case "socks5":
 			node.Type = "socks5"
 		default:
+			unsupported[p.Type]++
 			continue
 		}
 
 		nodes = append(nodes, node)
 	}
 
+	if len(nodes) == 0 && len(clash.Proxies) > 0 {
+		return nil, UnsupportedTypesError{Types: unsupported}
+	}
 	return nodes, nil
 }
 

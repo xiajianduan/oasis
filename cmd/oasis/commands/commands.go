@@ -447,7 +447,64 @@ var configReloadCmd = &cobra.Command{
 
 var subCmd = &cobra.Command{
 	Use:   "sub",
-	Short: "订阅管理 (update/status)",
+	Short: "订阅管理 (add/update/status)",
+}
+
+var subAddCmd = &cobra.Command{
+	Use:   "add <name> <url>",
+	Short: "添加订阅源",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := strings.TrimSpace(args[0])
+		url := strings.TrimSpace(args[1])
+		if name == "" {
+			return fmt.Errorf("订阅名称不能为空")
+		}
+		if url == "" || !strings.Contains(url, "://") {
+			return fmt.Errorf("订阅 URL 无效: %s", url)
+		}
+
+		cfg := loadConfig()
+		for _, sub := range cfg.Upstream.Subscriptions {
+			if sub.Name == name {
+				return fmt.Errorf("订阅已存在: %s", name)
+			}
+			if sub.URL == url {
+				return fmt.Errorf("订阅 URL 已存在: %s", url)
+			}
+		}
+
+		cfg.Upstream.Subscriptions = append(cfg.Upstream.Subscriptions, config.SubItem{
+			Name: name,
+			URL:  url,
+		})
+
+		doUpdate, _ := cmd.Flags().GetBool("update")
+		var result subscriptionUpdateResult
+		if doUpdate {
+			fmt.Printf("正在更新订阅 [%s]: %s ...\n", name, url)
+			var err error
+			result, err = updateSubscriptionNodes(cfg, config.SubItem{Name: name, URL: url})
+			if err != nil {
+				return fmt.Errorf("订阅已添加但更新失败: %w", err)
+			}
+		}
+
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			return err
+		}
+
+		fmt.Printf("订阅已添加: %s\n", name)
+		if doUpdate {
+			fmt.Printf("新增节点: %d，共 %d 个节点\n", result.Added, len(cfg.Upstream.Nodes))
+			if result.Selected != "" {
+				fmt.Printf("已选中节点: %s\n", result.Selected)
+			}
+		} else {
+			fmt.Println("执行 'oasis sub update' 拉取节点")
+		}
+		return nil
+	},
 }
 
 var subUpdateCmd = &cobra.Command{
@@ -459,42 +516,95 @@ var subUpdateCmd = &cobra.Command{
 			return fmt.Errorf("未配置订阅源")
 		}
 
-		existing := make(map[string]bool)
-		for _, n := range cfg.Upstream.Nodes {
-			existing[n.Name] = true
-		}
 		totalAdded := 0
+		failures := 0
+		selected := ""
 
 		for _, sub := range cfg.Upstream.Subscriptions {
 			fmt.Printf("正在更新订阅 [%s]: %s ...\n", sub.Name, sub.URL)
-			nodes, err := subscribe.FetchAndParse(sub.URL)
+			result, err := updateSubscriptionNodes(cfg, sub)
 			if err != nil {
+				failures++
 				fmt.Printf("  ✗ 更新失败: %v\n", err)
 				continue
 			}
-			added := 0
-			for _, n := range nodes {
-				if existing[n.Name] {
-					continue
-				}
-				cfg.Upstream.Nodes = append(cfg.Upstream.Nodes, n)
-				existing[n.Name] = true
-				added++
+			totalAdded += result.Added
+			if result.Selected != "" {
+				selected = result.Selected
 			}
-			totalAdded += added
-			fmt.Printf("  ✓ 新增 %d 个节点\n", added)
+			fmt.Printf("  ✓ 新增 %d 个节点\n", result.Added)
 		}
 
+		if failures == len(cfg.Upstream.Subscriptions) {
+			return fmt.Errorf("所有订阅更新失败")
+		}
 		if err := cfg.Save(config.DefaultPath()); err != nil {
 			return err
 		}
 
 		fmt.Printf("订阅更新完成: 新增 %d 个节点，共 %d 个节点\n", totalAdded, len(cfg.Upstream.Nodes))
-		if totalAdded > 0 {
+		if selected != "" {
+			fmt.Printf("已选中节点: %s\n", selected)
+		} else if totalAdded > 0 {
 			fmt.Println("使用 'oasis node list' 查看，'oasis node use <name>' 切换")
 		}
 		return nil
 	},
+}
+
+type subscriptionUpdateResult struct {
+	Added    int
+	Selected string
+}
+
+func updateSubscriptionNodes(cfg *config.Config, sub config.SubItem) (subscriptionUpdateResult, error) {
+	node, _ := cfg.GetSelectedNode()
+	nodes, err := subscribe.FetchAndParseViaNode(sub.URL, node)
+	if err != nil {
+		return subscriptionUpdateResult{}, err
+	}
+	if len(nodes) == 0 {
+		return subscriptionUpdateResult{}, fmt.Errorf("订阅中没有 Oasis 当前支持的节点类型")
+	}
+
+	existing := make(map[string]bool)
+	for _, n := range cfg.Upstream.Nodes {
+		existing[n.Name] = true
+	}
+
+	var result subscriptionUpdateResult
+	firstAdded := ""
+	for _, n := range nodes {
+		if existing[n.Name] {
+			continue
+		}
+		cfg.Upstream.Nodes = append(cfg.Upstream.Nodes, n)
+		existing[n.Name] = true
+		result.Added++
+		if firstAdded == "" {
+			firstAdded = n.Name
+		}
+	}
+
+	if shouldAutoSelect(cfg, firstAdded) {
+		cfg.Upstream.Selected = firstAdded
+		result.Selected = firstAdded
+	}
+	return result, nil
+}
+
+func shouldAutoSelect(cfg *config.Config, candidate string) bool {
+	if candidate == "" {
+		return false
+	}
+	if cfg.Upstream.Selected == "" || cfg.Upstream.Selected == "示例节点" {
+		return true
+	}
+	selected, err := cfg.GetSelectedNode()
+	if err != nil {
+		return true
+	}
+	return selected.Type == "socks5" && strings.HasPrefix(selected.Server, "192.168.")
 }
 
 var subStatusCmd = &cobra.Command{
@@ -943,7 +1053,8 @@ func init() {
 	rootCmd.AddCommand(systemProxyCmd)
 
 	// 订阅
-	subCmd.AddCommand(subUpdateCmd, subStatusCmd)
+	subAddCmd.Flags().Bool("update", false, "添加后立即更新订阅")
+	subCmd.AddCommand(subAddCmd, subUpdateCmd, subStatusCmd)
 	rootCmd.AddCommand(subCmd)
 
 	// 日志与调试

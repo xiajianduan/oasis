@@ -20,6 +20,7 @@
 - ✅ [feat][P0] 增加 macOS 系统 SOCKS 代理开关，保留域名目标给手机端/上游规则代理 — `internal/systemproxy/systemproxy.go` `cmd/oasis/commands/commands.go`
 - ✅ [feat][P1] `oasis config init` 改为交互式向导，默认开启系统代理、关闭 TUN — `cmd/oasis/commands/commands.go` `internal/config/config.go`
 - ✅ [chore][P2] 配置字段从 `system_proxy` 统一为 `system-proxy`，读取时兼容旧字段 — `internal/config/config.go`
+- ✅ [feat][P1] 增加 `oasis sub add <name> <url>`，支持 `--update` 添加后立即拉取节点 — `cmd/oasis/commands/commands.go`
 
 ### P2 优化项
 

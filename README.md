@@ -132,6 +132,7 @@ oasis
 │   ├── show     显示当前配置
 │   └── reload   重载配置
 ├── sub          订阅管理
+│   ├── add      添加订阅
 │   ├── update   更新订阅
 │   └── status   查看订阅状态
 ├── tun          TUN 模式管理
@@ -211,6 +212,12 @@ oasis config reload
 ### 订阅管理
 
 ```bash
+# 添加订阅
+oasis sub add 机场A "https://example.com/sub?token=xxx"
+
+# 添加后立即拉取节点
+oasis sub add 机场A "https://example.com/sub?token=xxx" --update
+
 # 更新订阅
 oasis sub update
 
