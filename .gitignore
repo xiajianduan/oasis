@@ -1,0 +1,4 @@
+oasis
+bin/tun2socks
+internal/assets/tun2socks_darwin_*
+.DS_Store
