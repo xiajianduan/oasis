@@ -19,6 +19,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+      - name: Download tun2socks asset
+        run: |
+          curl -sSfL -o /tmp/tun2socks.zip \
+            "https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-darwin-amd64.zip"
+          unzip -p /tmp/tun2socks.zip tun2socks-darwin-amd64 > internal/assets/tun2socks_darwin_amd64
+          rm -f /tmp/tun2socks.zip
+          chmod +x internal/assets/tun2socks_darwin_amd64
       - name: Build binaries
         run: |
           mkdir -p dist
