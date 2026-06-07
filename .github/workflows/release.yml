@@ -1,15 +1,14 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,11 +19,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/oasis-darwin-amd64 ./cmd/oasis
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/oasis-darwin-arm64 ./cmd/oasis
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/oasis-linux-amd64 ./cmd/oasis
+          cd dist && sha256sum * > checksums.txt
+      - name: Upload Release Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.event.release.tag_name }} dist/*
